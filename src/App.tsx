@@ -16,7 +16,8 @@ import {
   ChevronDown,
   Menu,
   X,
-  Gauge
+  Gauge,
+  LogOut
 } from 'lucide-react';
 import { HourlyDashboard } from './HourlyDashboard';
 import { DailyDashboard } from './DailyDashboard';
@@ -26,6 +27,7 @@ import { TemperatureMonitoring } from './TemperatureMonitoring';
 import { ReportsExport } from './ReportsExport';
 import { MasterSettings } from './MasterSettings';
 import { AuditLogsView } from './AuditLogsView';
+import { LoginPage } from './LoginPage';
 
 type NavigationTab =
   | 'HOURLY_ENTRY'
@@ -39,10 +41,15 @@ type NavigationTab =
   | 'AUDIT';
 
 export default function App() {
-  const { currentUser, switchRole, isLoadingMasters } = useApp();
+  const { currentUser, switchRole, isLoadingMasters, isAuthenticated, logout } = useApp();
   const [activeTab, setActiveTab] = useState<NavigationTab>('HOURLY_ENTRY');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [roleDropdownOpen, setRoleDropdownOpen] = useState(false);
+
+  // If user is not authenticated, display the Admin Login Page
+  if (!isAuthenticated) {
+    return <LoginPage />;
+  }
 
   // Role permissions filtering
   const canAccessMasters = currentUser.role === 'Admin' || currentUser.role === 'PPC';
@@ -148,9 +155,36 @@ export default function App() {
                       {currentUser.role === r && <span className="text-[10px] font-bold text-blue-600">&bull; Active</span>}
                     </button>
                   ))}
+
+                  <div className="border-t border-slate-100 mt-1 pt-1">
+                    <button
+                      type="button"
+                      id="dropdown-logout-btn"
+                      onClick={() => {
+                        setRoleDropdownOpen(false);
+                        logout();
+                      }}
+                      className="w-full text-left px-3 py-2 text-xs font-bold text-rose-600 hover:bg-rose-50 flex items-center gap-2 transition-colors"
+                    >
+                      <LogOut className="w-3.5 h-3.5" />
+                      <span>Sign Out / Lock Portal</span>
+                    </button>
+                  </div>
                 </div>
               )}
             </div>
+
+            {/* Direct Logout Header Button */}
+            <button
+              id="header-logout-btn"
+              type="button"
+              onClick={logout}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800/90 border border-slate-700/80 hover:bg-rose-950/40 hover:border-rose-700/60 hover:text-rose-300 text-slate-300 text-xs font-bold transition-all shadow-xs"
+              title="Sign Out to Admin Login Screen"
+            >
+              <LogOut className="w-3.5 h-3.5 text-slate-400" />
+              <span className="hidden sm:inline">Logout</span>
+            </button>
           </div>
         </div>
       </header>

@@ -229,3 +229,31 @@ export async function fetchDistinctProductionDates(): Promise<string[]> {
     return [];
   }
 }
+
+// Record an audit log entry in firestore
+export async function recordAuditLog(
+  user: { id: string; name: string },
+  action: 'CREATE' | 'UPDATE' | 'DELETE' | 'LOGIN' | 'EXPORT' | 'IMPORT',
+  collectionName: string,
+  recordId: string,
+  oldVal?: any,
+  newVal?: any
+): Promise<void> {
+  try {
+    const logId = `audit_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const log: AuditLog = {
+      log_id: logId,
+      user_id: user.id,
+      user_name: user.name,
+      action,
+      collection: collectionName,
+      record_id: recordId,
+      old_value: oldVal ? JSON.stringify(oldVal) : undefined,
+      new_value: newVal ? JSON.stringify(newVal) : undefined,
+      timestamp: new Date().toISOString()
+    };
+    await setDoc(doc(db, 'audit_logs', logId), log);
+  } catch (e) {
+    console.warn('Failed to record audit log:', e);
+  }
+}

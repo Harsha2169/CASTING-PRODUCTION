@@ -9,6 +9,7 @@ import {
   RefreshCw,
   CheckCircle2,
   AlertTriangle,
+  AlertCircle,
   Flame,
   Clock,
   Info,
@@ -56,21 +57,99 @@ export const ProductionEntry: React.FC = () => {
 
   const activeSupervisors = supervisors.filter(s => s.status === 'ACTIVE');
 
+  // If the logged in user is a Production Supervisor, determine initial match
+  const matchedLoggedInSupervisor = activeSupervisors.find(
+    s => s.supervisor_name.toLowerCase() === currentUser.name.toLowerCase() ||
+         currentUser.name.toLowerCase().includes(s.supervisor_name.toLowerCase())
+  );
+
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [selectedShift, setSelectedShift] = useState<'A' | 'B'>('A');
   const [supervisor, setSupervisor] = useState<string>(
-    activeSupervisors[0]?.supervisor_name || 'Vijay'
+    matchedLoggedInSupervisor?.supervisor_name || activeSupervisors[0]?.supervisor_name || 'Vijay'
   );
+
+  // Sync supervisor if user logs in or switches
+  useEffect(() => {
+    if (currentUser.role === 'Production Supervisor') {
+      const match = activeSupervisors.find(
+        s => s.supervisor_name.toLowerCase() === currentUser.name.toLowerCase() ||
+             currentUser.name.toLowerCase().includes(s.supervisor_name.toLowerCase())
+      );
+      if (match) {
+        setSupervisor(match.supervisor_name);
+      }
+    }
+  }, [currentUser.name, currentUser.role, activeSupervisors]);
   const [gridRows, setGridRows] = useState<GridHourRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [savingHourId, setSavingHourId] = useState<string | null>(null);
   const [message, setMessage] = useState<{ type: 'success' | 'error' | 'warning'; text: string } | null>(null);
   const [unsavedChanges, setUnsavedChanges] = useState(false);
   const [isExistingRecordLoaded, setIsExistingRecordLoaded] = useState(false);
 
-  // Top furnace quick sync / benchmark targets
-  const [f1DefaultTemp, setF1DefaultTemp] = useState<number | ''>(710);
-  const [f2DefaultTemp, setF2DefaultTemp] = useState<number | ''>(715);
+  // Track hours saved in Firestore and hours with local edits
+  const [savedHourIds, setSavedHourIds] = useState<Set<string>>(new Set());
+  const [modifiedHourIds, setModifiedHourIds] = useState<Set<string>>(new Set());
+
+  // Real-time system clock to highlight Current Hour live
+  const [currentSystemTime, setCurrentSystemTime] = useState<Date>(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentSystemTime(new Date());
+    }, 15000); // Poll clock every 15 seconds
+    return () => clearInterval(timer);
+  }, []);
+
+  // Evaluates whether a slot represents the current real-time hour
+  const isCurrentHourSlot = (hourStart: string, hourEnd: string): boolean => {
+    const todayStr = currentSystemTime.toISOString().split('T')[0];
+    if (selectedDate !== todayStr) return false;
+
+    const [sH, sM] = hourStart.split(':').map(Number);
+    const [eH, eM] = hourEnd.split(':').map(Number);
+
+    const curMinutes = currentSystemTime.getHours() * 60 + currentSystemTime.getMinutes();
+    const startMin = sH * 60 + sM;
+    let endMin = eH * 60 + eM;
+    if (endMin <= startMin) {
+      endMin += 24 * 60; // Crosses midnight
+    }
+
+    let testMinutes = curMinutes;
+    if (endMin > 24 * 60 && curMinutes < startMin) {
+      testMinutes += 24 * 60;
+    }
+
+    return testMinutes >= startMin && testMinutes < endMin;
+  };
+
+  // Evaluates whether a slot is in the future on today's shift
+  const isFutureHourSlot = (hourStart: string): boolean => {
+    const todayStr = currentSystemTime.toISOString().split('T')[0];
+    if (selectedDate > todayStr) return true;
+    if (selectedDate < todayStr) return false;
+
+    const [sH, sM] = hourStart.split(':').map(Number);
+    const curMinutes = currentSystemTime.getHours() * 60 + currentSystemTime.getMinutes();
+    const startMin = sH * 60 + sM;
+
+    if (selectedShift === 'A') {
+      return curMinutes < startMin;
+    }
+    // Shift B crosses midnight: 19:00 - 07:00
+    if (startMin >= 19 * 60) {
+      // 19:00 to 23:59 slot
+      if (curMinutes < 12 * 60) return false; // Current time is early morning, so 19:00 was yesterday evening
+      return curMinutes < startMin;
+    } else {
+      // 00:00 to 07:00 slot
+      if (curMinutes >= 19 * 60) return true; // It is still evening, morning slots are future
+      return curMinutes < startMin;
+    }
+  };
 
   // Build pristine 12-hour grid structure
   const buildEmptyGrid = (): GridHourRow[] => {
@@ -199,6 +278,18 @@ export const ProductionEntry: React.FC = () => {
       setUnsavedChanges(false);
       setIsExistingRecordLoaded(recordsFound);
 
+      // Track exactly which hour slots have saved records in Firestore
+      const savedSet = new Set<string>();
+      empty.forEach(row => {
+        const temp = tempMap.get(row.hour_id);
+        const hasGdc = gdcMachines.some(gdc => prodMap.has(`${row.hour_id}_${gdc.gdc_id}`));
+        if (temp || hasGdc) {
+          savedSet.add(row.hour_id);
+        }
+      });
+      setSavedHourIds(savedSet);
+      setModifiedHourIds(new Set());
+
       if (recordsFound) {
         setMessage({
           type: 'success',
@@ -220,6 +311,7 @@ export const ProductionEntry: React.FC = () => {
   // Actual production change per cell
   const handleActualChange = (hourId: string, gdcId: string, valStr: string) => {
     setUnsavedChanges(true);
+    setModifiedHourIds(prev => new Set(prev).add(hourId));
     const val = valStr === '' ? '' : Math.max(0, parseInt(valStr, 10) || 0);
     setGridRows(prev =>
       prev.map(row => {
@@ -238,6 +330,7 @@ export const ProductionEntry: React.FC = () => {
   // Model change per GDC for the entire shift
   const handleModelChangeForGdc = (gdcId: string, modelCode: string) => {
     setUnsavedChanges(true);
+    setModifiedHourIds(new Set(gridRows.map(r => r.hour_id)));
     setGridRows(prev =>
       prev.map(row => ({
         ...row,
@@ -252,11 +345,11 @@ export const ProductionEntry: React.FC = () => {
   // Hourly plan override change
   const handleHourlyPlanChange = (hourId: string, valStr: string) => {
     setUnsavedChanges(true);
+    setModifiedHourIds(prev => new Set(prev).add(hourId));
     const val = valStr === '' ? '' : Math.max(0, parseInt(valStr, 10) || 0);
     setGridRows(prev =>
       prev.map(row => {
         if (row.hour_id !== hourId) return row;
-        // Distribute plan across active GDCs evenly
         const gdcCount = gdcMachines.length || 8;
         const perGdc = typeof val === 'number' && gdcCount > 0 ? Math.round(val / gdcCount) : settings.default_plan_per_gdc_per_hour || 16;
         const newPlans: Record<string, number> = {};
@@ -276,6 +369,7 @@ export const ProductionEntry: React.FC = () => {
   // Furnace temperature change per hour
   const handleTempChange = (hourId: string, furnace: 'f1' | 'f2', valStr: string) => {
     setUnsavedChanges(true);
+    setModifiedHourIds(prev => new Set(prev).add(hourId));
     const val = valStr === '' ? '' : Math.max(0, parseInt(valStr, 10) || 0);
     setGridRows(prev =>
       prev.map(row => {
@@ -288,21 +382,10 @@ export const ProductionEntry: React.FC = () => {
     );
   };
 
-  // Apply default furnace temperatures to all empty hours
-  const handleApplyDefaultFurnaceTemps = () => {
-    setUnsavedChanges(true);
-    setGridRows(prev =>
-      prev.map(row => ({
-        ...row,
-        f1_temp: row.f1_temp === '' ? f1DefaultTemp : row.f1_temp,
-        f2_temp: row.f2_temp === '' ? f2DefaultTemp : row.f2_temp
-      }))
-    );
-  };
-
   // Breakdown minutes change
   const handleBreakdownChange = (hourId: string, valStr: string) => {
     setUnsavedChanges(true);
+    setModifiedHourIds(prev => new Set(prev).add(hourId));
     const val = valStr === '' ? '' : Math.max(0, parseInt(valStr, 10) || 0);
     setGridRows(prev =>
       prev.map(row => {
@@ -315,6 +398,7 @@ export const ProductionEntry: React.FC = () => {
   // Remarks change
   const handleRemarksChange = (hourId: string, text: string) => {
     setUnsavedChanges(true);
+    setModifiedHourIds(prev => new Set(prev).add(hourId));
     setGridRows(prev =>
       prev.map(row => {
         if (row.hour_id !== hourId) return row;
@@ -323,7 +407,132 @@ export const ProductionEntry: React.FC = () => {
     );
   };
 
-  // Save changes to Firestore
+  // 1. SAVE SINGLE HOURLY ROW (Granular hourly save)
+  const handleSaveSingleHour = async (hourId: string) => {
+    if (!supervisor.trim()) {
+      setMessage({ type: 'warning', text: 'Please select a Shift Supervisor before saving.' });
+      return;
+    }
+
+    const row = gridRows.find(r => r.hour_id === hourId);
+    if (!row) return;
+
+    const hasAnyActual = Object.values(row.gdc_actuals).some(v => typeof v === 'number');
+    const hasTemp = row.f1_temp !== '' || row.f2_temp !== '';
+    const hasBreakdown = typeof row.breakdown_min === 'number' && row.breakdown_min > 0;
+    const hasRemarks = (row.remarks || '').trim().length > 0;
+
+    if (!hasAnyActual && !hasTemp && !hasBreakdown && !hasRemarks) {
+      setMessage({
+        type: 'warning',
+        text: `No data entered for ${row.display_label}. Please manually enter GDC casting counts or temperatures before saving.`
+      });
+      return;
+    }
+
+    try {
+      setSavingHourId(hourId);
+      setMessage(null);
+      const batch = writeBatch(db);
+      const nowIso = new Date().toISOString();
+      let recordsCount = 0;
+      let tempSaved = false;
+
+      // Save Temperature Log if entered
+      if (hasTemp) {
+        const tempId = `${selectedDate}_${selectedShift}_${row.hour_id}`;
+        const tempDocRef = doc(db, 'hourly_temperature', tempId);
+        const tempData: HourlyTemperature = {
+          temperature_id: tempId,
+          date: selectedDate,
+          shift: selectedShift,
+          hour_id: row.hour_id,
+          furnace_1_temperature: typeof row.f1_temp === 'number' ? row.f1_temp : 0,
+          furnace_2_temperature: typeof row.f2_temp === 'number' ? row.f2_temp : 0,
+          remarks: row.remarks || '',
+          updated_at: nowIso,
+          created_at: nowIso
+        };
+        batch.set(tempDocRef, tempData, { merge: true });
+        tempSaved = true;
+      }
+
+      // Determine hour plan
+      const defaultTotalPlan = gdcMachines.length * (settings.default_plan_per_gdc_per_hour || 16);
+      const hourTotalPlan = typeof row.hourly_plan_override === 'number' ? row.hourly_plan_override : defaultTotalPlan;
+      const planPerGdc = Math.round(hourTotalPlan / (gdcMachines.length || 8));
+
+      // Save Normalized Production Records ONLY for machines where actual or stoppage is entered
+      gdcMachines.forEach(gdc => {
+        const actual = row.gdc_actuals[gdc.gdc_id];
+        const hasActual = typeof actual === 'number';
+
+        if (hasActual || hasBreakdown || hasRemarks) {
+          const actualQty = typeof actual === 'number' ? actual : 0;
+          const planQty = row.gdc_plans[gdc.gdc_id] || planPerGdc;
+          const achievePct = planQty > 0 ? Math.round((actualQty / planQty) * 1000) / 10 : 0;
+          const modelCode = row.gdc_models[gdc.gdc_id] || gdc.default_model || 'U244-3';
+
+          const recordId = getProductionRecordId(selectedDate, selectedShift, row.hour_id, gdc.gdc_id, modelCode);
+          const recRef = doc(db, 'production_records', recordId);
+          const recData: ProductionRecord = {
+            record_id: recordId,
+            date: selectedDate,
+            shift: selectedShift,
+            supervisor: supervisor.trim(),
+            hour_id: row.hour_id,
+            hour_start: row.hour_start,
+            hour_end: row.hour_end,
+            furnace: gdc.furnace_id || (gdc.gdc_id <= 'GDC-4' ? 'F-1' : 'F-2'),
+            gdc_machine: gdc.gdc_id,
+            model: modelCode,
+            planned_qty: planQty,
+            actual_qty: actualQty,
+            achievement_pct: achievePct,
+            breakdown_min: typeof row.breakdown_min === 'number' ? row.breakdown_min : 0,
+            remarks: row.remarks || '',
+            created_by: currentUser.name,
+            created_at: nowIso,
+            updated_at: nowIso
+          };
+
+          batch.set(recRef, recData, { merge: true });
+          recordsCount++;
+        }
+      });
+
+      await batch.commit();
+
+      const wasAlreadySaved = savedHourIds.has(hourId);
+      await logAudit(
+        currentUser,
+        wasAlreadySaved ? 'UPDATE' : 'CREATE',
+        'production_records',
+        `${selectedDate}_${selectedShift}_${hourId}`,
+        undefined,
+        { hour_id: hourId, recordsCount, tempSaved, supervisor: supervisor.trim() }
+      );
+
+      setSavedHourIds(prev => new Set(prev).add(hourId));
+      setModifiedHourIds(prev => {
+        const next = new Set(prev);
+        next.delete(hourId);
+        return next;
+      });
+
+      setMessage({
+        type: 'success',
+        text: `SAVED [${row.display_label}]: Stored ${recordsCount} machine records${tempSaved ? ' and furnace temperatures' : ''} in Firestore.`
+      });
+    } catch (err: any) {
+      console.error('Error saving hour:', err);
+      setMessage({ type: 'error', text: `Failed to save ${row.display_label}: ` + err.message });
+    } finally {
+      setSavingHourId(null);
+    }
+  };
+
+  // 2. SAVE ALL PRODUCTION (Batch save across all modified or populated hours)
   const handleSaveProduction = async () => {
     if (!supervisor.trim()) {
       setMessage({ type: 'warning', text: 'Please specify the Shift Supervisor name before saving.' });
@@ -336,11 +545,21 @@ export const ProductionEntry: React.FC = () => {
       const batch = writeBatch(db);
       let recordsCount = 0;
       let tempCount = 0;
+      const newlySavedHours = new Set(savedHourIds);
       const nowIso = new Date().toISOString();
 
       gridRows.forEach(row => {
-        // 1. Save Temperature Log if specified
-        if (row.f1_temp !== '' || row.f2_temp !== '') {
+        const hasAnyActual = Object.values(row.gdc_actuals).some(v => typeof v === 'number');
+        const hasTemp = row.f1_temp !== '' || row.f2_temp !== '';
+        const hasBreakdown = typeof row.breakdown_min === 'number' && row.breakdown_min > 0;
+        const hasRemarks = (row.remarks || '').trim().length > 0;
+
+        if (!hasAnyActual && !hasTemp && !hasBreakdown && !hasRemarks) {
+          return; // Skip completely blank slots
+        }
+
+        // 1. Save Temperature Log if entered
+        if (hasTemp) {
           const tempId = `${selectedDate}_${selectedShift}_${row.hour_id}`;
           const tempDocRef = doc(db, 'hourly_temperature', tempId);
           const tempData: HourlyTemperature = {
@@ -363,23 +582,18 @@ export const ProductionEntry: React.FC = () => {
         const hourTotalPlan = typeof row.hourly_plan_override === 'number' ? row.hourly_plan_override : defaultTotalPlan;
         const planPerGdc = Math.round(hourTotalPlan / (gdcMachines.length || 8));
 
-        // 3. Save Normalized Production Records for each GDC machine
+        // 3. Save Normalized Production Records
         gdcMachines.forEach(gdc => {
           const actual = row.gdc_actuals[gdc.gdc_id];
-          const hasActual = actual !== '';
-          const hasBreakdown = row.breakdown_min !== '';
-          const hasRemarks = (row.remarks || '').trim().length > 0;
+          const hasActual = typeof actual === 'number';
 
-          // Save record if data is present
           if (hasActual || hasBreakdown || hasRemarks) {
             const actualQty = typeof actual === 'number' ? actual : 0;
             const planQty = row.gdc_plans[gdc.gdc_id] || planPerGdc;
             const achievePct = planQty > 0 ? Math.round((actualQty / planQty) * 1000) / 10 : 0;
             const modelCode = row.gdc_models[gdc.gdc_id] || gdc.default_model || 'U244-3';
 
-            // Deterministic unique ID to prevent duplicates when updating
             const recordId = getProductionRecordId(selectedDate, selectedShift, row.hour_id, gdc.gdc_id, modelCode);
-
             const recRef = doc(db, 'production_records', recordId);
             const recData: ProductionRecord = {
               record_id: recordId,
@@ -406,6 +620,8 @@ export const ProductionEntry: React.FC = () => {
             recordsCount++;
           }
         });
+
+        newlySavedHours.add(row.hour_id);
       });
 
       await batch.commit();
@@ -419,11 +635,13 @@ export const ProductionEntry: React.FC = () => {
         { recordsCount, tempCount, supervisor: supervisor.trim() }
       );
 
+      setSavedHourIds(newlySavedHours);
+      setModifiedHourIds(new Set());
       setUnsavedChanges(false);
       setIsExistingRecordLoaded(true);
       setMessage({
         type: 'success',
-        text: `SAVE SUCCESSFUL: Saved ${recordsCount} normalized GDC records and ${tempCount} furnace temperature entries to Firestore for Shift ${selectedShift}.`
+        text: `SAVE SUCCESSFUL: Persisted ${recordsCount} machine records and ${tempCount} furnace temperature entries to Firestore for Shift ${selectedShift}.`
       });
     } catch (err: any) {
       console.error('Error saving hourly records:', err);
@@ -624,7 +842,7 @@ export const ProductionEntry: React.FC = () => {
         )}
       </div>
 
-      {/* 2. FURNACE INFORMATION SECTION */}
+      {/* 2. FURNACE INFORMATION SECTION (Strict Manual Monitoring) */}
       <div id="furnace-info-panel" className="bg-white rounded-xl border border-slate-200 shadow-sm p-4">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3 mb-3">
           <div className="flex items-center gap-2">
@@ -634,7 +852,7 @@ export const ProductionEntry: React.FC = () => {
             </h2>
           </div>
           <span className="text-[11px] text-slate-500 font-mono">
-            Acceptable Process Window: {settings.min_f1_temp}&deg;C - {settings.max_f1_temp}&deg;C
+            Acceptable Process Window: <strong className="text-slate-800">{settings.min_f1_temp}&deg;C - {settings.max_f1_temp}&deg;C</strong>
           </span>
         </div>
 
@@ -648,18 +866,15 @@ export const ProductionEntry: React.FC = () => {
                 </span>
                 <span className="text-xs font-bold text-slate-700">Feeds GDC-1 to GDC-4</span>
               </div>
-              <div className="text-[11px] text-slate-500 mt-1">
-                Shift Average: <strong className="font-mono text-slate-900">{avgF1 > 0 ? `${avgF1}°C` : 'Not logged'}</strong>
+              <div className="text-[11px] text-slate-500 mt-1.5">
+                Shift Average: <strong className="font-mono text-slate-900">{avgF1 > 0 ? `${avgF1}°C` : 'No readings entered yet'}</strong>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-600 font-semibold">Target &deg;C:</span>
-              <input
-                type="number"
-                value={f1DefaultTemp}
-                onChange={e => setF1DefaultTemp(e.target.value === '' ? '' : Number(e.target.value))}
-                className="w-18 text-xs font-mono font-bold text-center py-1 px-2 border border-slate-300 rounded bg-white"
-              />
+            <div className="text-right">
+              <span className="text-[10px] text-slate-500 block uppercase font-bold tracking-wider">Logging Mode</span>
+              <span className="text-xs font-mono font-bold text-slate-800 bg-white/80 px-2 py-0.5 rounded border border-amber-200">
+                Manual Hourly
+              </span>
             </div>
           </div>
 
@@ -672,30 +887,25 @@ export const ProductionEntry: React.FC = () => {
                 </span>
                 <span className="text-xs font-bold text-slate-700">Feeds GDC-5 to GDC-8</span>
               </div>
-              <div className="text-[11px] text-slate-500 mt-1">
-                Shift Average: <strong className="font-mono text-slate-900">{avgF2 > 0 ? `${avgF2}°C` : 'Not logged'}</strong>
+              <div className="text-[11px] text-slate-500 mt-1.5">
+                Shift Average: <strong className="font-mono text-slate-900">{avgF2 > 0 ? `${avgF2}°C` : 'No readings entered yet'}</strong>
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-600 font-semibold">Target &deg;C:</span>
-              <input
-                type="number"
-                value={f2DefaultTemp}
-                onChange={e => setF2DefaultTemp(e.target.value === '' ? '' : Number(e.target.value))}
-                className="w-18 text-xs font-mono font-bold text-center py-1 px-2 border border-slate-300 rounded bg-white"
-              />
+            <div className="text-right">
+              <span className="text-[10px] text-slate-500 block uppercase font-bold tracking-wider">Logging Mode</span>
+              <span className="text-xs font-mono font-bold text-slate-800 bg-white/80 px-2 py-0.5 rounded border border-amber-200">
+                Manual Hourly
+              </span>
             </div>
           </div>
         </div>
 
-        <div className="mt-3 flex justify-end">
-          <button
-            type="button"
-            onClick={handleApplyDefaultFurnaceTemps}
-            className="text-[11px] font-semibold text-blue-700 hover:text-blue-800 underline flex items-center gap-1"
-          >
-            <span>Auto-fill empty hourly slots with target furnace temperatures ({f1DefaultTemp}&deg;C / {f2DefaultTemp}&deg;C)</span>
-          </button>
+        <div className="mt-2.5 flex items-center justify-between text-[11px] text-slate-500 bg-slate-50 px-3 py-1.5 rounded-lg border border-slate-200/70">
+          <div className="flex items-center gap-1.5 text-slate-600">
+            <Info className="w-3.5 h-3.5 text-blue-600 flex-shrink-0" />
+            <span>Strict manual logging: Enter actual thermocouple readings for F-1 and F-2 in each hourly slot below as the shift progresses.</span>
+          </div>
+          <span className="font-mono text-slate-500 font-semibold">{gridRows.filter(r => r.f1_temp !== '' || r.f2_temp !== '').length} / 12 Hours Logged</span>
         </div>
       </div>
 
@@ -809,7 +1019,10 @@ export const ProductionEntry: React.FC = () => {
                 <th className="py-2.5 px-2 text-center w-20 bg-rose-50 border-r border-slate-200 text-rose-900">
                   B/D (m)
                 </th>
-                <th className="py-2.5 px-3 min-w-[180px]">Remarks / Stoppage Reason</th>
+                <th className="py-2.5 px-3 min-w-[170px] border-r border-slate-200">Remarks / Stoppage Reason</th>
+                <th className="py-2.5 px-2 text-center w-28 bg-slate-100 text-slate-800">
+                  Action / Status
+                </th>
               </tr>
             </thead>
 
@@ -826,15 +1039,53 @@ export const ProductionEntry: React.FC = () => {
 
                 const rowAchPct = currentHourPlan > 0 ? Math.round((rowActualSum / currentHourPlan) * 1000) / 10 : 0;
                 const hasAnyData = Object.values(row.gdc_actuals).some(v => typeof v === 'number');
+                const hasAnyEntry = hasAnyData || row.f1_temp !== '' || row.f2_temp !== '' || (typeof row.breakdown_min === 'number' && row.breakdown_min > 0) || row.remarks.trim().length > 0;
+
+                const isCurrent = isCurrentHourSlot(row.hour_start, row.hour_end);
+                const isFuture = isFutureHourSlot(row.hour_start);
+                const isSaved = savedHourIds.has(row.hour_id);
+                const isEdited = modifiedHourIds.has(row.hour_id);
+                const isSavingThisRow = savingHourId === row.hour_id;
 
                 return (
                   <tr
                     key={row.hour_id}
-                    className={`hover:bg-blue-50/20 transition-colors ${idx % 2 === 0 ? 'bg-white' : 'bg-slate-50/40'}`}
+                    className={`transition-colors ${
+                      isCurrent
+                        ? 'bg-blue-50/60 ring-2 ring-blue-500/50 relative z-10'
+                        : isSaved && !isEdited
+                        ? 'bg-emerald-50/20'
+                        : idx % 2 === 0
+                        ? 'bg-white'
+                        : 'bg-slate-50/40'
+                    } hover:bg-blue-50/30`}
                   >
                     {/* Time Label (Sticky column) */}
-                    <td className="py-2 px-3 font-bold text-slate-800 sticky left-0 bg-inherit z-10 border-r border-slate-200 whitespace-nowrap shadow-2xs">
-                      {row.display_label}
+                    <td className={`py-2 px-3 font-bold sticky left-0 z-10 border-r border-slate-200 whitespace-nowrap shadow-2xs ${
+                      isCurrent ? 'bg-blue-100/90 text-blue-950 border-l-4 border-l-blue-600' : 'bg-inherit text-slate-800'
+                    }`}>
+                      <div className="flex flex-col">
+                        <span className="font-mono text-xs">{row.display_label}</span>
+                        {isCurrent ? (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-black bg-blue-600 text-white tracking-wide mt-0.5 w-fit animate-pulse">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                            LIVE HOUR
+                          </span>
+                        ) : isSaved ? (
+                          <span className="text-[10px] font-semibold text-emerald-700 mt-0.5 inline-flex items-center gap-0.5">
+                            <CheckCircle2 className="w-2.5 h-2.5" />
+                            Logged
+                          </span>
+                        ) : isFuture ? (
+                          <span className="text-[10px] font-normal text-slate-400 mt-0.5">
+                            Upcoming
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-medium text-amber-600 mt-0.5">
+                            Unlogged
+                          </span>
+                        )}
+                      </div>
                     </td>
 
                     {/* F-1 Temp (°C) */}
@@ -844,7 +1095,7 @@ export const ProductionEntry: React.FC = () => {
                         type="number"
                         min="0"
                         max="900"
-                        placeholder="710"
+                        placeholder="—"
                         value={row.f1_temp}
                         onChange={e => handleTempChange(row.hour_id, 'f1', e.target.value)}
                         className={`w-full py-1 text-center font-mono text-xs rounded border focus:outline-none focus:ring-1 focus:ring-amber-500 ${
@@ -862,7 +1113,7 @@ export const ProductionEntry: React.FC = () => {
                         type="number"
                         min="0"
                         max="900"
-                        placeholder="715"
+                        placeholder="—"
                         value={row.f2_temp}
                         onChange={e => handleTempChange(row.hour_id, 'f2', e.target.value)}
                         className={`w-full py-1 text-center font-mono text-xs rounded border focus:outline-none focus:ring-1 focus:ring-amber-500 ${
@@ -882,7 +1133,7 @@ export const ProductionEntry: React.FC = () => {
                             id={`input-actual-${row.hour_id}-${gdc.gdc_id}`}
                             type="number"
                             min="0"
-                            placeholder="0"
+                            placeholder="—"
                             value={actualVal}
                             onChange={e => handleActualChange(row.hour_id, gdc.gdc_id, e.target.value)}
                             className="w-full py-1.5 px-1 text-center font-mono font-bold text-xs rounded border border-slate-300 bg-white text-slate-900 focus:bg-blue-50/50 focus:border-blue-600 focus:ring-1 focus:ring-blue-600 focus:outline-none"
@@ -893,7 +1144,7 @@ export const ProductionEntry: React.FC = () => {
 
                     {/* AUTOMATIC Hourly Total = SUM(GDC-1 to GDC-8) */}
                     <td className="py-2 px-2 text-center font-black font-mono text-xs text-blue-900 bg-blue-50/60 border-r border-slate-200">
-                      {hasAnyData ? rowActualSum : '-'}
+                      {hasAnyData ? rowActualSum : '—'}
                     </td>
 
                     {/* Hourly Plan (Automatic default, allows override) */}
@@ -927,7 +1178,7 @@ export const ProductionEntry: React.FC = () => {
                           {rowAchPct}%
                         </span>
                       ) : (
-                        <span className="text-slate-400 font-normal">-</span>
+                        <span className="text-slate-400 font-normal">—</span>
                       )}
                     </td>
 
@@ -938,7 +1189,7 @@ export const ProductionEntry: React.FC = () => {
                         type="number"
                         min="0"
                         max="60"
-                        placeholder="0"
+                        placeholder="—"
                         value={row.breakdown_min}
                         onChange={e => handleBreakdownChange(row.hour_id, e.target.value)}
                         className={`w-full py-1 text-center font-mono text-xs rounded border focus:outline-none ${
@@ -950,7 +1201,7 @@ export const ProductionEntry: React.FC = () => {
                     </td>
 
                     {/* Remarks / Stoppage Reason */}
-                    <td className="py-1 px-2">
+                    <td className="py-1 px-2 border-r border-slate-200">
                       <div className="relative">
                         <input
                           id={`input-remark-${row.hour_id}`}
@@ -967,6 +1218,47 @@ export const ProductionEntry: React.FC = () => {
                           ))}
                         </datalist>
                       </div>
+                    </td>
+
+                    {/* Action / Row Status */}
+                    <td className="py-1.5 px-2 text-center whitespace-nowrap">
+                      {isSavingThisRow ? (
+                        <span className="text-[11px] font-bold text-blue-600 animate-pulse inline-flex items-center gap-1">
+                          <RefreshCw className="w-3 h-3 animate-spin" />
+                          Saving...
+                        </span>
+                      ) : isEdited ? (
+                        <button
+                          type="button"
+                          id={`btn-save-hour-${row.hour_id}`}
+                          onClick={() => handleSaveSingleHour(row.hour_id)}
+                          className="inline-flex items-center gap-1 px-2 py-1 text-[10px] font-bold text-white bg-amber-600 hover:bg-amber-700 rounded shadow-xs active:scale-95 transition-all"
+                          title="Click to save updated manual edits for this hour"
+                        >
+                          <AlertCircle className="w-3 h-3" />
+                          <span>Update</span>
+                        </button>
+                      ) : isSaved ? (
+                        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-300">
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                          Saved
+                        </span>
+                      ) : hasAnyEntry ? (
+                        <button
+                          type="button"
+                          id={`btn-save-hour-${row.hour_id}`}
+                          onClick={() => handleSaveSingleHour(row.hour_id)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 text-[10px] font-bold text-white bg-blue-600 hover:bg-blue-700 rounded shadow-xs active:scale-95 transition-all"
+                          title="Save this hour's manual entries"
+                        >
+                          <Save className="w-3 h-3" />
+                          <span>Save Hour</span>
+                        </button>
+                      ) : (
+                        <span className="text-[10px] font-medium text-slate-400 px-2 py-0.5 bg-slate-100 rounded border border-slate-200">
+                          Blank
+                        </span>
+                      )}
                     </td>
                   </tr>
                 );
@@ -1020,8 +1312,13 @@ export const ProductionEntry: React.FC = () => {
                 </td>
 
                 {/* Supervisor Signature / Status */}
-                <td className="py-3 px-3 text-slate-300 font-normal text-[11px]">
-                  Supervisor: <strong className="text-white">{supervisor}</strong> &bull; {gridRows.length} Hours Logged
+                <td className="py-3 px-3 text-slate-300 font-normal text-[11px] border-r border-slate-800">
+                  Supervisor: <strong className="text-white">{supervisor}</strong>
+                </td>
+
+                {/* Action Column Footer */}
+                <td className="py-3 px-2 text-center font-mono text-[11px] text-emerald-400 font-bold">
+                  {savedHourIds.size} / 12 Saved
                 </td>
               </tr>
             </tfoot>
