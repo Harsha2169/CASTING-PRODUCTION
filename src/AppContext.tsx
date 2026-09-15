@@ -7,6 +7,7 @@ import {
   ModelMaster,
   HourSlotMaster,
   RejectionCategoryMaster,
+  SupervisorMaster,
   SystemSettings
 } from './types';
 import {
@@ -15,6 +16,7 @@ import {
   INITIAL_MODELS,
   INITIAL_HOUR_SLOTS,
   INITIAL_REJECTION_CATEGORIES,
+  INITIAL_SUPERVISORS,
   DEFAULT_SYSTEM_SETTINGS
 } from './constants';
 import { initializeDatabaseMasters } from './dbService';
@@ -31,6 +33,7 @@ interface AppContextType {
   models: ModelMaster[];
   hourSlots: HourSlotMaster[];
   rejectionCategories: RejectionCategoryMaster[];
+  supervisors: SupervisorMaster[];
   settings: SystemSettings;
   updateSettings: (s: SystemSettings) => Promise<void>;
   reloadMasters: () => Promise<void>;
@@ -54,6 +57,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const [models, setModels] = useState<ModelMaster[]>(INITIAL_MODELS);
   const [hourSlots, setHourSlots] = useState<HourSlotMaster[]>(INITIAL_HOUR_SLOTS);
   const [rejectionCategories, setRejectionCategories] = useState<RejectionCategoryMaster[]>(INITIAL_REJECTION_CATEGORIES);
+  const [supervisors, setSupervisors] = useState<SupervisorMaster[]>(INITIAL_SUPERVISORS);
   const [settings, setSettings] = useState<SystemSettings>(DEFAULT_SYSTEM_SETTINGS);
   const [isLoadingMasters, setIsLoadingMasters] = useState(true);
 
@@ -63,12 +67,13 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       await initializeDatabaseMasters();
       await seedInitialSampleDataIfEmpty();
 
-      const [fSnap, gSnap, mSnap, hSnap, rSnap, sSnap] = await Promise.all([
+      const [fSnap, gSnap, mSnap, hSnap, rSnap, supSnap, sSnap] = await Promise.all([
         getDocs(collection(db, 'furnaces')),
         getDocs(collection(db, 'gdc_machines')),
         getDocs(collection(db, 'models')),
         getDocs(collection(db, 'hour_slots')),
         getDocs(collection(db, 'rejection_categories')),
+        getDocs(collection(db, 'supervisors')),
         getDocs(collection(db, 'system_settings'))
       ]);
 
@@ -88,6 +93,9 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
       if (!rSnap.empty) {
         setRejectionCategories(rSnap.docs.map(d => d.data() as RejectionCategoryMaster));
+      }
+      if (!supSnap.empty) {
+        setSupervisors(supSnap.docs.map(d => d.data() as SupervisorMaster));
       }
       if (!sSnap.empty) {
         const sDoc = sSnap.docs.find(d => d.id === 'config');
@@ -135,6 +143,7 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         models,
         hourSlots,
         rejectionCategories,
+        supervisors,
         settings,
         updateSettings,
         reloadMasters: loadMasters,

@@ -37,15 +37,6 @@ interface GridHourRow {
   remarks: string;
 }
 
-const COMMON_SUPERVISORS = [
-  'Rajesh Kumar',
-  'Suresh Patil',
-  'Anil Sharma',
-  'Ramesh Gowda',
-  'Venkatesh Rao',
-  'Mahesh Reddy'
-];
-
 const COMMON_REMARK_OPTIONS = [
   'Normal Production',
   'Machine breakdown',
@@ -61,11 +52,15 @@ const COMMON_REMARK_OPTIONS = [
 ];
 
 export const ProductionEntry: React.FC = () => {
-  const { currentUser, gdcMachines, models, hourSlots, settings, furnaces } = useApp();
+  const { currentUser, gdcMachines, models, hourSlots, settings, furnaces, supervisors } = useApp();
+
+  const activeSupervisors = supervisors.filter(s => s.status === 'ACTIVE');
 
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
   const [selectedShift, setSelectedShift] = useState<'A' | 'B'>('A');
-  const [supervisor, setSupervisor] = useState<string>(currentUser.name || 'Rajesh Kumar');
+  const [supervisor, setSupervisor] = useState<string>(
+    activeSupervisors[0]?.supervisor_name || 'Vijay'
+  );
   const [gridRows, setGridRows] = useState<GridHourRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -149,6 +144,8 @@ export const ProductionEntry: React.FC = () => {
 
       if (foundSupervisor) {
         setSupervisor(foundSupervisor);
+      } else if (activeSupervisors.length > 0 && !activeSupervisors.some(s => s.supervisor_name === supervisor)) {
+        setSupervisor(activeSupervisors[0].supervisor_name);
       }
 
       const tempMap = new Map<string, HourlyTemperature>();
@@ -565,28 +562,35 @@ export const ProductionEntry: React.FC = () => {
             </div>
           </div>
 
-          {/* Supervisor Selection */}
+          {/* Supervisor Selection Dropdown from Supervisor Master */}
           <div>
-            <label className="block text-xs font-bold text-slate-700 mb-1">Shift Supervisor</label>
-            <div className="flex gap-2">
-              <input
-                id="supervisor-input"
-                type="text"
-                list="supervisor-list"
-                value={supervisor}
-                onChange={e => {
-                  setSupervisor(e.target.value);
-                  setUnsavedChanges(true);
-                }}
-                placeholder="Enter Supervisor Name"
-                className="w-full text-xs font-semibold px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white text-slate-900"
-              />
-              <datalist id="supervisor-list">
-                {COMMON_SUPERVISORS.map(s => (
-                  <option key={s} value={s} />
-                ))}
-              </datalist>
+            <div className="flex items-center justify-between mb-1">
+              <label htmlFor="supervisor-select" className="block text-xs font-bold text-slate-700">
+                Shift Supervisor
+              </label>
+              <span className="text-[10px] text-blue-600 font-semibold">Supervisor Master</span>
             </div>
+            <select
+              id="supervisor-select"
+              value={supervisor}
+              onChange={e => {
+                setSupervisor(e.target.value);
+                setUnsavedChanges(true);
+              }}
+              className="w-full text-xs font-semibold px-3 py-2 border border-slate-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:outline-none bg-white text-slate-900 shadow-2xs"
+            >
+              {activeSupervisors.map(s => (
+                <option key={s.supervisor_id} value={s.supervisor_name}>
+                  {s.supervisor_name}
+                </option>
+              ))}
+              {/* Retain historical supervisor who entered this shift even if later deactivated */}
+              {supervisor && !activeSupervisors.some(s => s.supervisor_name === supervisor) && (
+                <option value={supervisor}>
+                  {supervisor} (Historical / Deactivated)
+                </option>
+              )}
+            </select>
           </div>
         </div>
 

@@ -96,7 +96,7 @@ export async function seedInitialSampleDataIfEmpty(): Promise<void> {
             record_id: recId,
             date: dateStr,
             shift: 'A',
-            supervisor: 'Rajesh Kumar',
+            supervisor: dateStr === today ? 'Vijay' : 'Karthik',
             hour_id: h.id,
             hour_start: h.start,
             hour_end: h.end,

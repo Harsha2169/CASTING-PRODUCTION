@@ -22,6 +22,7 @@ import {
   ModelMaster,
   HourSlotMaster,
   RejectionCategoryMaster,
+  SupervisorMaster,
   SystemSettings,
   AuditLog,
   CurrentUser
@@ -32,6 +33,7 @@ import {
   INITIAL_MODELS,
   INITIAL_HOUR_SLOTS,
   INITIAL_REJECTION_CATEGORIES,
+  INITIAL_SUPERVISORS,
   DEFAULT_SYSTEM_SETTINGS
 } from './constants';
 
@@ -84,6 +86,15 @@ export async function initializeDatabaseMasters(): Promise<void> {
       const batch = writeBatch(db);
       INITIAL_REJECTION_CATEGORIES.forEach(r => {
         batch.set(doc(db, 'rejection_categories', r.category_id), r);
+      });
+      await batch.commit();
+    }
+
+    const supSnap = await getDocs(collection(db, 'supervisors'));
+    if (supSnap.empty) {
+      const batch = writeBatch(db);
+      INITIAL_SUPERVISORS.forEach(s => {
+        batch.set(doc(db, 'supervisors', s.supervisor_id), s);
       });
       await batch.commit();
     }

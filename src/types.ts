@@ -99,6 +99,14 @@ export interface RejectionCategoryMaster {
   status: 'ACTIVE' | 'INACTIVE';
 }
 
+export interface SupervisorMaster {
+  supervisor_id: string;
+  supervisor_name: string;
+  status: 'ACTIVE' | 'INACTIVE';
+  created_at: string;
+  updated_at: string;
+}
+
 export interface AuditLog {
   log_id: string;
   user_id: string;

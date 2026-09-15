@@ -5,6 +5,7 @@ import {
   GDCMaster,
   ModelMaster,
   RejectionCategoryMaster,
+  SupervisorMaster,
   SystemSettings
 } from './types';
 
@@ -66,6 +67,23 @@ export const INITIAL_REJECTION_CATEGORIES: RejectionCategoryMaster[] = [
   { category_id: 'cat_inclusion', category_name: 'Slag / Dross Inclusion', status: 'ACTIVE' },
   { category_id: 'cat_dimension', category_name: 'Dimensional Variation', status: 'ACTIVE' },
   { category_id: 'cat_surface', category_name: 'Surface Defect / Roughness', status: 'ACTIVE' },
+];
+
+export const INITIAL_SUPERVISORS: SupervisorMaster[] = [
+  {
+    supervisor_id: 'sup_vijay',
+    supervisor_name: 'Vijay',
+    status: 'ACTIVE',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z'
+  },
+  {
+    supervisor_id: 'sup_karthik',
+    supervisor_name: 'Karthik',
+    status: 'ACTIVE',
+    created_at: '2026-01-01T00:00:00.000Z',
+    updated_at: '2026-01-01T00:00:00.000Z'
+  }
 ];
 
 export const DEFAULT_SYSTEM_SETTINGS: SystemSettings = {
