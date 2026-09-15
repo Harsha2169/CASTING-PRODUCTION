@@ -1,0 +1,6 @@
+{
+  "name": "DSPL 8-GDC Hourly Manufacturing MIS",
+  "description": "DSPL 8-GDC Machine 100% Manual Hourly Production Reporting, Normalized Manufacturing MIS & Control Tower with real-time Firestore synchronization, performance analytics, rejection pareto, and reports export.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
